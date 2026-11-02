@@ -171,7 +171,7 @@
       <span class="cap" id="ammoCap">30</span>
     </div>
     <div class="hint" id="hint">
-      食指伸出 = <b>举枪瞄准</b> · 收回食指 = <b>开火</b> · 握拳 = <b>换弹</b> · 张开手掌 = <b>收枪</b>
+      食指伸出 = <b>举枪瞄准</b> · 收回食指 = <b>开火</b> · 握拳 = <b>换弹</b> · 左手扶前握把 = <b>双手持枪</b>
     </div>
     <div class="actions">
       <select id="camSelect" class="cam-select"></select>
@@ -192,7 +192,6 @@
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
 <script>
 (function () {
   'use strict';
@@ -226,7 +225,6 @@
     canvas.width = Math.round(W * DPR);
     canvas.height = Math.round(H * DPR);
     ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
-    resizeGL();
     resizeMini();
   }
 
@@ -278,6 +276,8 @@
   };
 
   var handState = { x: 0, y: 0, angle: 0, roll: 0, scale: 700, pts: null, raw: null, seen: -1e9, active: false };
+  // 左手（托前握把）的状态
+  var supportState = { x: 0, y: 0, pts: null, raw: null, seen: -1e9, active: false };
 
   var pose = 'idle';
   var fistSince = 0;
@@ -440,20 +440,67 @@
     return 'other';
   }
 
+  function handednessLabel(res, i) {
+    var h = res && res.multiHandedness && res.multiHandedness[i];
+    if (Array.isArray(h)) h = h[0];
+    return String((h && h.label) || '');
+  }
+
+  // 送进模型的是未经镜像的原始画面，而 MediaPipe 以自拍镜像为前提给出左右手，所以左右要互换
+  function handSide(label) {
+    if (label === 'Left') return 'right';
+    if (label === 'Right') return 'left';
+    return '';
+  }
+
+  function snapRaw(lm) {
+    return lm.map(function (p) { return { x: p.x, y: p.y }; });
+  }
+
+  function angleLerp(a, b, t) {
+    var d = b - a;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return a + d * t;
+  }
+
   function onResults(res) {
     var lms = (res && res.multiHandLandmarks) || [];
     var now = performance.now();
 
     if (lms.length === 0) {
       handState.active = false;
+      supportState.active = false;
       pose = 'idle';
       fistSince = 0;
       if (mode === 'camera') setPill('未检测到手', false);
       return;
     }
 
-    // 取第一只手
-    var info = analyzeHand(lms[0]);
+    var infos = lms.map(function (lm, i) {
+      return { info: analyzeHand(lm), side: handSide(handednessLabel(res, i)), raw: lm };
+    });
+
+    // 右手握枪、左手托前握把
+    var trigger = null, support = null;
+    if (infos.length >= 2) {
+      for (var i = 0; i < infos.length; i++) {
+        if (infos[i].side === 'right' && !trigger) trigger = infos[i];
+        else if (infos[i].side === 'left' && !support) support = infos[i];
+      }
+      // 左右标签认不出时，用「离上一次握枪位置更近」的那只手兜底
+      if (!trigger || !support) {
+        var d0 = dist(infos[0].info.anchor, { x: handState.x, y: handState.y });
+        var d1 = dist(infos[1].info.anchor, { x: handState.x, y: handState.y });
+        if (d0 <= d1) { trigger = infos[0]; support = infos[1]; }
+        else { trigger = infos[1]; support = infos[0]; }
+      }
+    } else {
+      // 只有一只手时，无论左右都由它持枪
+      trigger = infos[0];
+    }
+
+    var info = trigger.info;
     var nextPose = classify(info);
 
     // 开火：瞄准状态下食指收回（瞄准需保持 80ms，避免识别抖动误触）
@@ -479,13 +526,34 @@
     handState.angle = info.angle;
     handState.roll = clamp(info.roll, -1.1, 1.1);
     handState.pts = info.pts;
-    handState.raw = lms[0].map(function (p) { return { x: p.x, y: p.y }; });
+    handState.raw = snapRaw(trigger.raw);
     handState.scale = clamp(info.palmW * 3.4, 420, 900);
     handState.seen = now;
     handState.active = true;
 
+    // 双手持枪：两手连线决定枪身方向，两手间距决定枪的远近
+    if (support) {
+      var sinfo = support.info;
+      var sdx = sinfo.anchor.x - info.anchor.x;
+      var sdy = sinfo.anchor.y - info.anchor.y;
+      var span = Math.sqrt(sdx * sdx + sdy * sdy);
+      if (span > 60) {
+        handState.angle = angleLerp(info.angle, Math.atan2(sdy, sdx), 0.9);
+        handState.scale = clamp(span * SPRITE_W / FRONT_DIST, 420, 900);
+      }
+      supportState.x = sinfo.anchor.x;
+      supportState.y = sinfo.anchor.y;
+      supportState.pts = sinfo.pts;
+      supportState.raw = snapRaw(support.raw);
+      supportState.seen = now;
+      supportState.active = true;
+    } else {
+      supportState.active = false;
+    }
+
     if (mode === 'camera') {
-      setPill(pose === 'aim' ? '瞄准中' : (pose === 'fist' ? '换弹' : '识别到手'), true);
+      var pillLabel = pose === 'aim' ? '瞄准中' : (pose === 'fist' ? '换弹' : '识别到手');
+      setPill(support ? pillLabel + ' · 双手' : pillLabel, true);
     }
   }
 
@@ -647,6 +715,8 @@
   var GUN_ANCHOR_Y = 0.80;
   var MUZZLE_X = -1163, MUZZLE_Y = -47;   // 枪口相对锚点（贴图坐标）
   var PORT_X = -75, PORT_Y = -98;         // 抛壳口相对锚点
+  var FRONT_X = -663, FRONT_Y = -94;      // 前握把相对锚点（贴图坐标，护目前端下方）
+  var FRONT_DIST = Math.sqrt(FRONT_X * FRONT_X + FRONT_Y * FRONT_Y);
 
   var gunImg = new Image();
   var gunSprite = null;
@@ -712,214 +782,16 @@
     };
   }
 
-  // ---------- 3D 枪械：把贴图沿轮廓拉出厚度，做真正的空间旋转 ----------
-  var THREE_OK = !!window.THREE;
-  var glRenderer = null, glScene = null, glCamera = null, glGroup = null;
-  var gun3D = false;
-  var GUN_THICK = 46;                 // 枪身厚度（贴图像素）
-  var AXIS_X = null, AXIS_Z = null, _v3 = null, _qAim = null, _qRoll = null;
-
-  function initGL() {
-    if (glRenderer) return gun3D;
-    if (!THREE_OK) return false;
-    try {
-      var c = document.createElement('canvas');
-      glRenderer = new THREE.WebGLRenderer({ canvas: c, alpha: true, antialias: true, preserveDrawingBuffer: true });
-    } catch (e) { THREE_OK = false; return false; }
-    glRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    glRenderer.setSize(W, H, false);
-    glRenderer.setClearColor(0x000000, 0);
-    try { glRenderer.outputEncoding = THREE.sRGBEncoding; } catch (e) { }
-
-    glScene = new THREE.Scene();
-    glCamera = new THREE.OrthographicCamera(-W / 2, W / 2, H / 2, -H / 2, 1, 8000);
-    glCamera.position.z = 3000;
-
-    glScene.add(new THREE.AmbientLight(0xffffff, 0.5));
-    var l1 = new THREE.DirectionalLight(0xfff3e2, 1.05); l1.position.set(-0.4, 0.9, 1); glScene.add(l1);
-    var l2 = new THREE.DirectionalLight(0x9a86ff, 0.5); l2.position.set(0.7, -0.6, 0.9); glScene.add(l2);
-
-    AXIS_X = new THREE.Vector3(1, 0, 0);
-    AXIS_Z = new THREE.Vector3(0, 0, 1);
-    _v3 = new THREE.Vector3();
-    _qAim = new THREE.Quaternion();
-    _qRoll = new THREE.Quaternion();
-
-    buildGun3D();
-    return gun3D;
-  }
-
-  // 按贴图每列的不透明上下边界，逐列挤出成一块有厚度的实体
-  function buildGun3D() {
-    if (!glRenderer || !gunSprite || gun3D) return;
-
-    var img = gunSprite;
-    var ax = img.width * GUN_ANCHOR_X;
-    var ay = img.height * GUN_ANCHOR_Y;
-    var iw = img.width, ih = img.height;
-
-    var N = 200, SH = 62;
-    var smp = document.createElement('canvas');
-    smp.width = N; smp.height = SH;
-    var sc = smp.getContext('2d');
-    sc.drawImage(img, 0, 0, N, SH);
-    var pix = sc.getImageData(0, 0, N, SH).data;
-    var kW = iw / N, kY = ih / SH;
-
-    var top = [], bot = [];
-    for (var i = 0; i < N; i++) {
-      var t = -1, b = -1;
-      for (var y = 0; y < SH; y++) {
-        if (pix[(y * N + i) * 4 + 3] > 16) { if (t < 0) t = y; b = y; }
-      }
-      top.push(t < 0 ? null : t * kY);
-      bot.push(b < 0 ? null : (b + 1) * kY);
-    }
-
-    var texPos = [], texUv = [], wallPos = [];
-    var hz = GUN_THICK / 2;
-
-    function tri(dst, duv, p1, p2, p3, u1, u2, u3) {
-      dst.push(p1[0], p1[1], p1[2], p2[0], p2[1], p2[2], p3[0], p3[1], p3[2]);
-      if (duv) duv.push(u1[0], u1[1], u2[0], u2[1], u3[0], u3[1]);
-    }
-    function quad(dst, duv, p1, p2, p3, p4, u1, u2, u3, u4) {
-      tri(dst, duv, p1, p2, p3, u1, u2, u3);
-      tri(dst, duv, p1, p3, p4, u1, u3, u4);
-    }
-    function wall(p1, p2, p3, p4) { quad(wallPos, null, p1, p2, p3, p4); }
-
-    for (var j = 0; j < N; j++) {
-      if (top[j] === null) continue;
-      var xL = j * kW - ax, xR = (j + 1) * kW - ax;
-      var yT = ay - top[j], yB = ay - bot[j];
-      var uL = j / N, uR = (j + 1) / N;
-      var vT = 1 - top[j] / ih, vB = 1 - bot[j] / ih;
-
-      // 正反两面（贴图）
-      quad(texPos, texUv, [xL, yB, hz], [xR, yB, hz], [xR, yT, hz], [xL, yT, hz],
-        [uL, vB], [uR, vB], [uR, vT], [uL, vT]);
-      quad(texPos, texUv, [xR, yB, -hz], [xL, yB, -hz], [xL, yT, -hz], [xR, yT, -hz],
-        [uR, vB], [uL, vB], [uL, vT], [uR, vT]);
-
-      // 上下侧壁
-      wall([xL, yT, hz], [xR, yT, hz], [xR, yT, -hz], [xL, yT, -hz]);
-      wall([xL, yB, hz], [xR, yB, hz], [xR, yB, -hz], [xL, yB, -hz]);
-
-      // 相邻列高低差形成的台阶面
-      if (j < N - 1 && top[j + 1] !== null) {
-        var xB = (j + 1) * kW - ax;
-        var yT2 = ay - top[j + 1], yB2 = ay - bot[j + 1];
-        if (Math.abs(yT2 - yT) > 0.01) wall([xB, yT, hz], [xB, yT2, hz], [xB, yT2, -hz], [xB, yT, -hz]);
-        if (Math.abs(yB2 - yB) > 0.01) wall([xB, yB, hz], [xB, yB2, hz], [xB, yB2, -hz], [xB, yB, -hz]);
-      }
-    }
-
-    // 左右两端封口
-    var first = -1, last = -1;
-    for (var j2 = 0; j2 < N; j2++) {
-      if (top[j2] !== null) { if (first < 0) first = j2; last = j2; }
-    }
-    if (first >= 0) {
-      var x0 = first * kW - ax, yT0 = ay - top[first], yB0 = ay - bot[first];
-      wall([x0, yB0, hz], [x0, yT0, hz], [x0, yT0, -hz], [x0, yB0, -hz]);
-      var x1 = (last + 1) * kW - ax, yT1 = ay - top[last], yB1 = ay - bot[last];
-      wall([x1, yB1, hz], [x1, yT1, hz], [x1, yT1, -hz], [x1, yB1, -hz]);
-    }
-
-    var total = texPos.length + wallPos.length;
-    if (!total) return;
-
-    var posArr = new Float32Array(total);
-    posArr.set(texPos, 0);
-    posArr.set(wallPos, texPos.length);
-    var uvArr = new Float32Array(total / 3 * 2);
-    uvArr.set(texUv, 0);
-
-    var geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
-    geo.setAttribute('uv', new THREE.BufferAttribute(uvArr, 2));
-    geo.computeVertexNormals();
-    geo.addGroup(0, texPos.length / 3, 0);
-    geo.addGroup(texPos.length / 3, wallPos.length / 3, 1);
-
-    var tex = new THREE.Texture(img);
-    tex.needsUpdate = true;
-    tex.anisotropy = 4;
-    try { tex.encoding = THREE.sRGBEncoding; } catch (e) { }
-
-    var matFace = new THREE.MeshStandardMaterial({
-      map: tex, transparent: true, alphaTest: 0.02,
-      roughness: 0.6, metalness: 0.18, side: THREE.DoubleSide
-    });
-    var matWall = new THREE.MeshStandardMaterial({
-      color: 0x2b2438, roughness: 0.48, metalness: 0.45, side: THREE.DoubleSide
-    });
-
-    glGroup = new THREE.Group();
-    glGroup.add(new THREE.Mesh(geo, [matFace, matWall]));
-    glScene.add(glGroup);
-    gun3D = true;
-  }
-
-  function projectGunPt(px, py) {
-    glGroup.updateMatrixWorld(true);
-    _v3.set(px, -py, 0).applyMatrix4(glGroup.matrixWorld);
-    return { x: _v3.x + W / 2, y: H / 2 - _v3.y };
-  }
-
-  function resizeGL() {
-    if (!glRenderer) return;
-    glRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-    glRenderer.setSize(W, H, false);
-    glCamera.left = -W / 2; glCamera.right = W / 2;
-    glCamera.top = H / 2; glCamera.bottom = -H / 2;
-    glCamera.updateProjectionMatrix();
-  }
-
-  function drawGun3D() {
-    var a = gunAnchorPt();
-    glGroup.position.set(a.x - W / 2, H / 2 - a.y, 0);
-    var k = gun.scale / SPRITE_W;
-    glGroup.scale.set(k, k, k);
-
-    _qAim.setFromAxisAngle(AXIS_Z, gun.angle - Math.PI);
-    _qRoll.setFromAxisAngle(AXIS_X, gun.roll);
-    glGroup.quaternion.copy(_qAim.multiply(_qRoll));
-
-    glGroup.updateMatrixWorld(true);
-    glRenderer.render(glScene, glCamera);
-    ctx.drawImage(glRenderer.domElement, 0, 0, W, H);
-  }
-
-  function muzzlePoint() {
-    if (gun3D) return projectGunPt(MUZZLE_X, MUZZLE_Y);
-    return spritePt(MUZZLE_X, MUZZLE_Y);
-  }
-  function portPoint() {
-    if (gun3D) return projectGunPt(PORT_X, PORT_Y);
-    return spritePt(PORT_X, PORT_Y);
-  }
+  function muzzlePoint() { return spritePt(MUZZLE_X, MUZZLE_Y); }
+  function portPoint() { return spritePt(PORT_X, PORT_Y); }
 
   function drawRifle(t) {
     if (!gunSprite) return;
-
-    if (!glRenderer && THREE_OK) initGL();
-    if (gun3D) {
-      drawGun3D();
-    } else {
-      drawRifleFlat();
-    }
-
-    if (gun.flash > 0.01) drawMuzzleFlash(gun.flash);
-  }
-
-  // 没有 WebGL 时的降级画法（卡片式伪 3D）
-  function drawRifleFlat() {
     var dw = gun.scale;
     var dh = gunSprite.height * (dw / gunSprite.width);
     var a = gunAnchorPt();
 
+    // 手腕翻转：roll=0 时枪身正对镜头，|roll| 越大越接近侧棱
     var roll = gun.roll;
     var flat = gunFlat();
     var shade = Math.min(1, Math.abs(Math.sin(roll)) * 1.25);
@@ -930,6 +802,7 @@
     ctx.rotate(gun.angle - Math.PI);
     ctx.scale(1, flat);
 
+    // 落地阴影：随翻转一起压扁，让枪浮在画面之上
     if (gunShadow) {
       ctx.globalAlpha = 0.55;
       ctx.drawImage(gunShadow, -dw * GUN_ANCHOR_X + dw * 0.012,
@@ -939,6 +812,7 @@
 
     ctx.drawImage(gunSprite, -dw * GUN_ANCHOR_X, -dh * GUN_ANCHOR_Y, dw, dh);
 
+    // 体积阴影：侧转时枪背光那一面压暗，偏移量随翻转方向移动
     if (shade > 0.02 && gunDark) {
       ctx.globalAlpha = shade * 0.55;
       ctx.drawImage(gunDark,
@@ -948,6 +822,8 @@
       ctx.globalAlpha = 1;
     }
     ctx.restore();
+
+    if (gun.flash > 0.01) drawMuzzleFlash(gun.flash);
   }
 
   function drawMuzzleFlash(power) {
@@ -1074,11 +950,11 @@
     [0, 17]
   ];
 
-  function drawHandSkeleton(c, pts, alpha) {
+  function drawHandSkeleton(c, pts, alpha, color, dotColor) {
     if (!pts) return;
     c.save();
     c.globalAlpha = alpha;
-    c.strokeStyle = 'rgba(255,181,69,.9)';
+    c.strokeStyle = color || 'rgba(255,181,69,.9)';
     c.lineWidth = 1.4;
     c.beginPath();
     for (var i = 0; i < HAND_LINKS.length; i++) {
@@ -1089,7 +965,7 @@
     }
     c.stroke();
 
-    c.fillStyle = 'rgba(255,222,168,.95)';
+    c.fillStyle = dotColor || 'rgba(255,222,168,.95)';
     for (var j = 0; j < pts.length; j++) {
       c.beginPath();
       c.arc(pts[j].x, pts[j].y, j === 0 ? 3 : 2, 0, Math.PI * 2);
@@ -1128,7 +1004,16 @@
     });
 
     var a = Math.max(0, 1 - (performance.now() - handState.seen) / 700) * 0.9;
-    if (a > 0.02) drawHandSkeleton(mctx, P, a);
+    if (a > 0.02) drawHandSkeleton(mctx, P, a, 'rgba(255,181,69,.9)', 'rgba(255,222,168,.95)');
+
+    // 左手：托前握把，用青色区分
+    if (supportState.raw) {
+      var S = supportState.raw.map(function (p) {
+        return { x: ox + (1 - p.x) * dw, y: oy + p.y * dh };
+      });
+      var sa = Math.max(0, 1 - (performance.now() - supportState.seen) / 700) * 0.9;
+      if (sa > 0.02) drawHandSkeleton(mctx, S, sa, 'rgba(120,205,255,.9)', 'rgba(200,234,255,.95)');
+    }
   }
 
   // ---------- 准星 ----------
@@ -1303,7 +1188,7 @@
       locateFile: function (file) { return base + file; }
     });
     hands.setOptions({
-      maxNumHands: 1,
+      maxNumHands: 2,
       modelComplexity: 1,
       minDetectionConfidence: 0.6,
       minTrackingConfidence: 0.5,
