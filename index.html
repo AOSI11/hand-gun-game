@@ -1,0 +1,1315 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="theme-color" content="#0a0c0b" />
+<title>手势持枪 · 实弹射击</title>
+<style>
+  :root{
+    --ink:#eef2ee;
+    --muted:rgba(238,242,238,.5);
+    --amber:#ffb545;
+    --red:#ff5a45;
+  }
+  *{box-sizing:border-box}
+  html,body{
+    height:100%;margin:0;overflow:hidden;overscroll-behavior:none;
+    background:#070908;color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+    -webkit-tap-highlight-color:transparent;
+    user-select:none;
+  }
+  #stage{
+    position:fixed;inset:0;overflow:hidden;
+    background:radial-gradient(115% 80% at 50% 12%,#171d18 0%,#0a0c0a 55%,#050605 100%);
+  }
+  #cam,#mini{
+    position:absolute;right:14px;
+    bottom:128px;
+    width:190px;
+    height:142px;
+    object-fit:cover;border-radius:14px;
+    border:1px solid rgba(255,255,255,.14);
+    box-shadow:0 14px 34px rgba(0,0,0,.55);
+    background:#0b0e0c;
+    transition:opacity .3s ease;
+    z-index:4;
+  }
+  #cam{transform:scaleX(-1);opacity:1}
+  #mini{pointer-events:none;z-index:5;border-color:rgba(255,181,69,.28)}
+  #stage.hide-cam #cam,#stage.hide-cam #mini{opacity:0}
+  #scene{position:absolute;inset:0;width:100%;height:100%;display:block}
+
+  .vignette{
+    position:absolute;inset:0;z-index:3;pointer-events:none;
+    background:radial-gradient(65% 55% at 50% 48%,transparent 40%,rgba(0,0,0,.55) 100%);
+  }
+
+  .topbar{
+    position:absolute;top:0;left:0;right:0;z-index:6;pointer-events:none;
+    display:flex;align-items:center;gap:10px;
+    padding:14px 16px;
+  }
+  .title{font-size:12px;letter-spacing:.22em;font-weight:600;color:var(--muted)}
+  .pill{
+    margin-left:auto;display:flex;align-items:center;gap:7px;
+    font-size:12px;padding:7px 12px;border-radius:999px;
+    background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);color:var(--muted);
+  }
+  .dot{width:7px;height:7px;border-radius:50%;background:#5a605a;transition:background .3s,box-shadow .3s}
+  .pill.live{color:#9cf0c6;border-color:rgba(56,232,160,.3)}
+  .pill.live .dot{background:#38e8a0;box-shadow:0 0 10px #38e8a0}
+
+  .hud{
+    position:absolute;left:0;right:0;z-index:6;pointer-events:none;
+    bottom:16px;
+    display:flex;flex-direction:column;align-items:center;gap:12px;padding:0 16px;
+  }
+  .ammo{
+    display:flex;align-items:baseline;gap:8px;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+    text-shadow:0 0 18px rgba(255,181,69,.35);
+  }
+  .ammo .n{font-size:34px;font-weight:700;color:#ffcf87;letter-spacing:.04em;line-height:1}
+  .ammo .sep{font-size:18px;color:rgba(255,207,135,.35)}
+  .ammo .cap{font-size:15px;color:rgba(255,207,135,.55)}
+  .ammo.empty .n{color:#ff6a55}
+
+  .hint{
+    font-size:12.5px;line-height:1.7;text-align:center;color:var(--muted);
+    padding:9px 16px;border-radius:14px;
+    background:rgba(0,0,0,.35);border:1px solid rgba(255,255,255,.08);
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    max-width:92vw;
+  }
+  .hint b{color:var(--amber);font-weight:600}
+  .hint i{font-style:normal;color:#ff8a78}
+
+  .actions{display:flex;gap:10px;pointer-events:auto}
+  button{
+    appearance:none;-webkit-appearance:none;font-family:inherit;
+    border:1px solid rgba(255,255,255,.14);background:rgba(255,255,255,.07);
+    color:var(--ink);font-size:12.5px;padding:9px 15px;border-radius:11px;cursor:pointer;
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+    transition:transform .15s,background .2s;
+  }
+  button:hover{background:rgba(255,255,255,.14)}
+  button:active{transform:scale(.96)}
+  button.primary{
+    background:linear-gradient(135deg,#ffb545,#ff6a3d);border-color:transparent;color:#241a08;
+    font-weight:700;box-shadow:0 10px 30px rgba(255,120,60,.28);padding:12px 28px;font-size:14px;
+  }
+
+  .cam-select{
+    display:none;appearance:none;-webkit-appearance:none;
+    font-family:inherit;font-size:12.5px;color:var(--ink);
+    background:rgba(255,255,255,.07);border:1px solid rgba(255,255,255,.14);
+    border-radius:11px;padding:9px 12px;max-width:240px;cursor:pointer;outline:none;
+    backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px);
+  }
+  .cam-select option{background:#14181a;color:#eef2ee}
+
+  .score{
+    position:absolute;top:58px;right:16px;z-index:6;
+    pointer-events:none;text-align:right;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  .score .lbl{font-size:10px;letter-spacing:.2em;color:var(--muted)}
+  .score .val{font-size:26px;font-weight:700;color:#ffcf87;line-height:1.15;
+    text-shadow:0 0 16px rgba(255,181,69,.3)}
+
+  #gate{
+    position:absolute;inset:0;z-index:30;display:grid;place-items:center;
+    background:radial-gradient(80% 62% at 50% 42%,rgba(22,30,22,.97),rgba(3,4,4,.99));
+    transition:opacity .5s;
+  }
+  #gate.hide{opacity:0;pointer-events:none}
+  .gate-card{text-align:center;max-width:370px;padding:0 26px}
+  .gate-card h1{
+    font-size:26px;margin:0 0 14px;letter-spacing:.06em;
+    background:linear-gradient(115deg,#ffd08a,#ffb545 45%,#ff7a4d);
+    -webkit-background-clip:text;background-clip:text;color:transparent;
+  }
+  .gate-card p{font-size:13px;line-height:1.85;color:var(--muted);margin:0 0 26px}
+  .gate-card .tip{font-size:11px;color:rgba(238,242,238,.3);margin-top:18px;line-height:1.7}
+  .cross-mark{width:82px;height:82px;margin:0 auto 18px;position:relative}
+  .cross-mark::before,.cross-mark::after{
+    content:"";position:absolute;background:rgba(255,181,69,.75);
+  }
+  .cross-mark::before{left:50%;top:0;width:2px;height:100%;transform:translateX(-50%)}
+  .cross-mark::after{top:50%;left:0;height:2px;width:100%;transform:translateY(-50%)}
+  .cross-mark span{
+    position:absolute;inset:14px;border:2px solid rgba(255,181,69,.55);border-radius:50%;
+    animation:pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse{0%,100%{transform:scale(1);opacity:.55}50%{transform:scale(1.14);opacity:.95}}
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="cam" playsinline muted autoplay></video>
+  <canvas id="mini"></canvas>
+  <canvas id="scene"></canvas>
+  <div class="vignette"></div>
+
+  <div class="topbar">
+    <div class="title">手势持枪 · 实弹射击</div>
+    <div class="pill" id="pill"><span class="dot"></span><span id="pillText">未启动</span></div>
+  </div>
+
+  <div class="score">
+    <div class="lbl">SCORE</div>
+    <div class="val" id="scoreVal">0</div>
+  </div>
+
+  <div class="hud">
+    <div class="ammo" id="ammoBox">
+      <span class="n" id="ammoNow">30</span>
+      <span class="sep">/</span>
+      <span class="cap" id="ammoCap">30</span>
+    </div>
+    <div class="hint" id="hint">
+      食指伸出 = <b>举枪瞄准</b> · 收回食指 = <b>开火</b> · 握拳 = <b>换弹</b> · 张开手掌 = <b>收枪</b>
+    </div>
+    <div class="actions">
+      <select id="camSelect" class="cam-select"></select>
+      <button id="toggleCam">显示画面</button>
+      <button id="resetBtn">重新开始</button>
+    </div>
+  </div>
+
+  <div id="gate">
+    <div class="gate-card">
+      <div class="cross-mark"><span></span></div>
+      <h1>手势持枪</h1>
+      <p>MediaPipe 实时识别手部骨骼，把你的手变成一把步枪<br>
+      食指伸出瞄准 · 收回食指开火 · 握拳换弹</p>
+      <button class="primary" id="startBtn">开启电脑摄像头</button>
+      <div class="tip">使用电脑默认摄像头，画面只在本地处理，不会上传</div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var stage = document.getElementById('stage');
+  var video = document.getElementById('cam');
+  var canvas = document.getElementById('scene');
+  var ctx = canvas.getContext('2d');
+  var miniCanvas = document.getElementById('mini');
+  var mctx = miniCanvas.getContext('2d');
+  var pill = document.getElementById('pill');
+  var pillText = document.getElementById('pillText');
+  var hintEl = document.getElementById('hint');
+  var gate = document.getElementById('gate');
+  var startBtn = document.getElementById('startBtn');
+  var toggleCamBtn = document.getElementById('toggleCam');
+  var resetBtn = document.getElementById('resetBtn');
+  var camSelect = document.getElementById('camSelect');
+  var ammoBox = document.getElementById('ammoBox');
+  var ammoNow = document.getElementById('ammoNow');
+  var ammoCap = document.getElementById('ammoCap');
+  var scoreVal = document.getElementById('scoreVal');
+
+  // ---------- 尺寸 ----------
+  var W = 0, H = 0, DPR = 1;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = canvas.clientWidth || window.innerWidth;
+    H = canvas.clientHeight || window.innerHeight;
+    canvas.width = Math.round(W * DPR);
+    canvas.height = Math.round(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    resizeMini();
+  }
+
+  function resizeMini() {
+    var r = miniCanvas.getBoundingClientRect();
+    if (!r.width || !r.height) return;
+    var d = Math.min(window.devicePixelRatio || 1, 2);
+    miniCanvas.width = Math.round(r.width * d);
+    miniCanvas.height = Math.round(r.height * d);
+    mctx.setTransform(d, 0, 0, d, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  window.addEventListener('orientationchange', function () { setTimeout(resize, 300); });
+  resize();
+
+  // ---------- 工具 ----------
+  function clamp(v, a, b) { return v < a ? a : (v > b ? b : v); }
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  function dist(a, b) {
+    var dx = a.x - b.x, dy = a.y - b.y;
+    return Math.sqrt(dx * dx + dy * dy);
+  }
+  function rand(a, b) { return a + Math.random() * (b - a); }
+  function roundRect(c, x, y, w, h, r) {
+    c.beginPath();
+    c.moveTo(x + r, y);
+    c.arcTo(x + w, y, x + w, y + h, r);
+    c.arcTo(x + w, y + h, x, y + h, r);
+    c.arcTo(x, y + h, x, y, r);
+    c.arcTo(x, y, x + w, y, r);
+    c.closePath();
+  }
+
+  // ---------- 状态 ----------
+  var mode = 'idle';
+  var hands = null;
+  var lastSend = 0;
+  var sending = false;
+  var camStream = null;
+  var showCam = true;
+  var MAG_SIZE = 30;
+
+  var gun = {
+    x: 0, y: 0, angle: -Math.PI / 2, scale: 700, roll: 0,
+    alpha: 0, visible: false,
+    recoil: 0, flash: 0, flashSeed: 0,
+    ammo: MAG_SIZE, reloading: false, reloadT: 0,
+    magOff: 0, aimX: 0, aimY: 0
+  };
+
+  var handState = { x: 0, y: 0, angle: 0, roll: 0, scale: 700, pts: null, raw: null, seen: -1e9, active: false };
+
+  var pose = 'idle';
+  var fistSince = 0;
+  var lastShot = 0;
+  var aimSince = 0;
+  var running = false;
+
+  var targets = [];
+  var sparks = [];
+  var casings = [];
+  var score = 0;
+
+  // ---------- 音效 ----------
+  var actx = null, noiseBuf = null, clickBuf = null;
+
+  function initAudio() {
+    try {
+      var AC = window.AudioContext || window.webkitAudioContext;
+      if (!AC) return;
+      actx = new AC();
+      var len = Math.floor(actx.sampleRate * 0.2);
+      noiseBuf = actx.createBuffer(1, len, actx.sampleRate);
+      var d = noiseBuf.getChannelData(0);
+      for (var i = 0; i < len; i++) {
+        var k = 1 - i / len;
+        d[i] = (Math.random() * 2 - 1) * k * k;
+      }
+      var len2 = Math.floor(actx.sampleRate * 0.06);
+      clickBuf = actx.createBuffer(1, len2, actx.sampleRate);
+      var d2 = clickBuf.getChannelData(0);
+      for (var j = 0; j < len2; j++) {
+        d2[j] = (Math.random() * 2 - 1) * Math.pow(1 - j / len2, 3);
+      }
+    } catch (e) { actx = null; }
+  }
+
+  function playShot() {
+    if (!actx || !noiseBuf) return;
+    var t = actx.currentTime;
+    var src = actx.createBufferSource();
+    src.buffer = noiseBuf;
+    var lp = actx.createBiquadFilter();
+    lp.type = 'lowpass';
+    lp.frequency.value = 1600;
+    var g = actx.createGain();
+    g.gain.setValueAtTime(0.5, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.18);
+    src.connect(lp); lp.connect(g); g.connect(actx.destination);
+    src.start(t);
+
+    var osc = actx.createOscillator();
+    osc.type = 'sine';
+    osc.frequency.setValueAtTime(120, t);
+    osc.frequency.exponentialRampToValueAtTime(45, t + 0.12);
+    var g2 = actx.createGain();
+    g2.gain.setValueAtTime(0.22, t);
+    g2.gain.exponentialRampToValueAtTime(0.001, t + 0.16);
+    osc.connect(g2); g2.connect(actx.destination);
+    osc.start(t); osc.stop(t + 0.2);
+  }
+
+  function playClick() {
+    if (!actx || !clickBuf) return;
+    var t = actx.currentTime;
+    var src = actx.createBufferSource();
+    src.buffer = clickBuf;
+    var g = actx.createGain();
+    g.gain.setValueAtTime(0.3, t);
+    g.gain.exponentialRampToValueAtTime(0.001, t + 0.07);
+    src.connect(g); g.connect(actx.destination);
+    src.start(t);
+  }
+
+  // ---------- HUD ----------
+  function setPill(text, live) {
+    pillText.textContent = text;
+    pill.classList.toggle('live', !!live);
+  }
+
+  function refreshAmmo() {
+    ammoNow.textContent = String(gun.ammo);
+    ammoCap.textContent = gun.reloading ? '换弹中' : String(MAG_SIZE);
+    ammoBox.classList.toggle('empty', gun.ammo <= 0);
+  }
+
+  function addScore(n) {
+    score += n;
+    scoreVal.textContent = String(score);
+  }
+
+  // ---------- 手部分析 ----------
+  function analyzeHand(lm) {
+    // 视频以 object-fit:cover 铺满画布，需要把归一化坐标映射到实际绘制位置
+    var vw = video.videoWidth || 0;
+    var vh = video.videoHeight || 0;
+    var mapX, mapY;
+
+    if (vw > 0 && vh > 0) {
+      var sc = Math.max(W / vw, H / vh);
+      var dw = vw * sc, dh = vh * sc;
+      var ox = (W - dw) / 2, oy = (H - dh) / 2;
+      mapX = function (nx) { return ox + (1 - nx) * dw; };
+      mapY = function (ny) { return oy + ny * dh; };
+    } else {
+      mapX = function (nx) { return (1 - nx) * W; };
+      mapY = function (ny) { return ny * H; };
+    }
+
+    var P = lm.map(function (p) {
+      return { x: mapX(p.x), y: mapY(p.y) };
+    });
+
+    var wrist = P[0];
+    var palmW = dist(P[5], P[17]) || 1;
+
+    var pairs = [[5, 8], [9, 12], [13, 16], [17, 20]];
+    var exts = [];
+    for (var i = 0; i < 4; i++) {
+      var dTip = dist(P[pairs[i][1]], wrist);
+      var dMcp = dist(P[pairs[i][0]], wrist) || 1;
+      exts.push(dTip / dMcp);
+    }
+
+    var anchor = {
+      x: (P[0].x + P[5].x + P[9].x + P[13].x + P[17].x) / 5,
+      y: (P[0].y + P[5].y + P[9].y + P[13].y + P[17].y) / 5
+    };
+
+    // 朝向取「腕→食指」与「腕→中指」的平均，握枪时更稳
+    var dx = (P[8].x + P[9].x) / 2 - wrist.x;
+    var dy = (P[8].y + P[9].y) / 2 - wrist.y;
+    var aim = Math.atan2(dy, dx);
+
+    // 掌心宽度轴（食指根 → 小指根）相对枪身「向上」的偏角，也就是手腕的翻转
+    var upx = -Math.sin(aim), upy = Math.cos(aim);
+    var wx = P[17].x - P[5].x, wy = P[17].y - P[5].y;
+    var roll = Math.atan2(upx * wy - upy * wx, upx * wx + upy * wy);
+
+    return {
+      anchor: anchor,
+      angle: aim,
+      roll: roll,
+      palmW: palmW,
+      exts: exts,
+      pts: P,
+      indexDir: { x: dx, y: dy }
+    };
+  }
+
+  function classify(info) {
+    var idxExt = info.exts[0] > 1.55;
+    var midExt = info.exts[1] > 1.50;
+    var rinExt = info.exts[2] > 1.50;
+    var pinExt = info.exts[3] > 1.50;
+    var nExt = (idxExt ? 1 : 0) + (midExt ? 1 : 0) + (rinExt ? 1 : 0) + (pinExt ? 1 : 0);
+
+    if (idxExt && !midExt && !rinExt && !pinExt) return 'aim';
+    if (nExt === 0) return 'fist';
+    if (nExt >= 3) return 'open';
+    return 'other';
+  }
+
+  function onResults(res) {
+    var lms = (res && res.multiHandLandmarks) || [];
+    var now = performance.now();
+
+    if (lms.length === 0) {
+      handState.active = false;
+      pose = 'idle';
+      fistSince = 0;
+      if (mode === 'camera') setPill('未检测到手', false);
+      return;
+    }
+
+    // 取第一只手
+    var info = analyzeHand(lms[0]);
+    var nextPose = classify(info);
+
+    // 开火：瞄准状态下食指收回（瞄准需保持 80ms，避免识别抖动误触）
+    if (nextPose === 'aim' && pose !== 'aim') {
+      aimSince = now;
+    }
+    if (pose === 'aim' && nextPose !== 'aim' && now - aimSince > 80) {
+      fire(now);
+    }
+
+    pose = nextPose;
+
+    // 换弹：握拳持续 350ms
+    if (pose === 'fist') {
+      if (!fistSince) fistSince = now;
+      else if (now - fistSince > 350) startReload();
+    } else {
+      fistSince = 0;
+    }
+
+    handState.x = info.anchor.x;
+    handState.y = info.anchor.y;
+    handState.angle = info.angle;
+    handState.roll = clamp(info.roll, -1.1, 1.1);
+    handState.pts = info.pts;
+    handState.raw = lms[0].map(function (p) { return { x: p.x, y: p.y }; });
+    handState.scale = clamp(info.palmW * 3.4, 420, 900);
+    handState.seen = now;
+    handState.active = true;
+
+    if (mode === 'camera') {
+      setPill(pose === 'aim' ? '瞄准中' : (pose === 'fist' ? '换弹' : '识别到手'), true);
+    }
+  }
+
+  // ---------- 开火 ----------
+  function fire(now) {
+    if (gun.reloading || gun.ammo <= 0) return;
+    if (now - lastShot < 60) return;
+    lastShot = now;
+
+    gun.ammo--;
+    gun.recoil = 1;
+    gun.flash = 1;
+    gun.flashSeed = Math.random() * Math.PI * 2;
+    refreshAmmo();
+    playShot();
+
+    // 枪口与抛壳口（世界坐标）
+    var muzzle = muzzlePoint();
+    var port = portPoint();
+
+    // 弹壳
+    var perp = gun.angle + Math.PI / 2;
+    for (var i = 0; i < 3; i++) {
+      casings.push({
+        x: port.x, y: port.y,
+        vx: Math.cos(perp) * rand(1.5, 3.4) + rand(-0.6, 0.6),
+        vy: Math.sin(perp) * rand(1.5, 3.4) - rand(1.2, 2.4),
+        rot: rand(0, 6.28), vr: rand(-0.3, 0.3),
+        life: 1
+      });
+    }
+    // 枪口烟
+    for (var k = 0; k < 6; k++) {
+      var a = gun.angle + rand(-0.35, 0.35);
+      sparks.push({
+        x: muzzle.x, y: muzzle.y,
+        vx: Math.cos(a) * rand(2, 6),
+        vy: Math.sin(a) * rand(2, 6),
+        life: 1, decay: rand(0.02, 0.04),
+        size: rand(2, 5), smoke: true,
+        hue: 35
+      });
+    }
+
+    var reach = gun.scale * 0.16;
+    gun.aimX = muzzle.x + Math.cos(gun.angle) * reach;
+    gun.aimY = muzzle.y + Math.sin(gun.angle) * reach;
+    checkHit(gun.aimX, gun.aimY);
+  }
+
+  function startReload() {
+    if (gun.reloading || gun.ammo >= MAG_SIZE) return;
+    gun.reloading = true;
+    gun.reloadT = 0;
+    playClick();
+    refreshAmmo();
+  }
+
+  // ---------- 靶子 ----------
+  function spawnTarget() {
+    var r = rand(30, 52);
+    var margin = 90;
+    var x = rand(margin, W - margin);
+    var y = rand(H * 0.12, H * 0.55);
+    targets.push({
+      x: x, y: y, r: r,
+      vx: rand(-0.35, 0.35), vy: rand(-0.22, 0.22),
+      life: 6.5, max: 6.5, hit: false,
+      spin: rand(0, 6.28)
+    });
+  }
+
+  function updateTargets(dt) {
+    for (var i = targets.length - 1; i >= 0; i--) {
+      var t = targets[i];
+      t.x += t.vx;
+      t.y += t.vy;
+      t.spin += dt * 0.6;
+      if (t.x < 60 || t.x > W - 60) t.vx *= -1;
+      if (t.y < 70 || t.y > H * 0.58) t.vy *= -1;
+      t.life -= dt;
+      if (t.life <= 0) targets.splice(i, 1);
+    }
+  }
+
+  function checkHit(cx, cy) {
+    for (var i = targets.length - 1; i >= 0; i--) {
+      var tg = targets[i];
+      var d = Math.sqrt((tg.x - cx) * (tg.x - cx) + (tg.y - cy) * (tg.y - cy));
+      if (d < tg.r + 26) {
+        burst(tg.x, tg.y, tg.r);
+        targets.splice(i, 1);
+        addScore(Math.max(7, Math.round(22 - d / 6)));
+        spawnTarget();
+        return;
+      }
+    }
+  }
+
+  function burst(x, y, r) {
+    for (var i = 0; i < 26; i++) {
+      var a = rand(0, Math.PI * 2);
+      var sp = rand(1.5, 7);
+      sparks.push({
+        x: x, y: y,
+        vx: Math.cos(a) * sp, vy: Math.sin(a) * sp,
+        life: 1, decay: rand(0.018, 0.045),
+        size: rand(1.6, 4), smoke: false,
+        hue: rand(20, 48)
+      });
+    }
+  }
+
+  function drawTarget(tg, t) {
+    var a = clamp(tg.life / 1.2, 0, 1);
+    ctx.save();
+    ctx.globalAlpha = a;
+    ctx.translate(tg.x, tg.y);
+
+    var glow = ctx.createRadialGradient(0, 0, 0, 0, 0, tg.r * 2.1);
+    glow.addColorStop(0, 'rgba(255,150,60,.18)');
+    glow.addColorStop(1, 'rgba(255,120,40,0)');
+    ctx.fillStyle = glow;
+    ctx.beginPath();
+    ctx.arc(0, 0, tg.r * 2.1, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.rotate(Math.sin(tg.spin) * 0.05);
+
+    ctx.beginPath();
+    ctx.arc(0, 0, tg.r, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(28,24,18,.92)';
+    ctx.fill();
+
+    ctx.strokeStyle = 'rgba(255,181,69,.85)';
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(0, 0, tg.r, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.strokeStyle = 'rgba(255,181,69,.45)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(0, 0, tg.r * 0.66, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,90,69,.9)';
+    ctx.beginPath();
+    ctx.arc(0, 0, tg.r * 0.26, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // ---------- 枪械贴图（H416 白紫皮肤）----------
+  // 贴图中枪口在左端、握把在宽 72.7% 处，锚点对齐握把底部（手抓的位置）
+  var SPRITE_W = 1600;
+  var GUN_ANCHOR_X = 0.727;
+  var GUN_ANCHOR_Y = 0.80;
+  var MUZZLE_X = -1163, MUZZLE_Y = -47;   // 枪口相对锚点（贴图坐标）
+  var PORT_X = -75, PORT_Y = -98;         // 抛壳口相对锚点
+
+  var gunImg = new Image();
+  var gunSprite = null;
+  var gunDark = null;      // 暗化剪影：手腕翻转时叠上去做体积阴影
+  var gunShadow = null;    // 模糊剪影：让枪从背景里浮起来
+
+  gunImg.onload = function () {
+    gunSprite = gunImg;
+
+    var c = document.createElement('canvas');
+    c.width = gunImg.width; c.height = gunImg.height;
+    var cc = c.getContext('2d');
+    cc.drawImage(gunImg, 0, 0);
+    cc.globalCompositeOperation = 'source-atop';
+    cc.fillStyle = 'rgba(3,6,10,0.8)';
+    cc.fillRect(0, 0, c.width, c.height);
+    gunDark = c;
+
+    var s = document.createElement('canvas');
+    s.width = gunImg.width; s.height = gunImg.height;
+    var sc = s.getContext('2d');
+    try { sc.filter = 'blur(9px)'; } catch (e) { /* 老浏览器不支持，退化成硬边阴影 */ }
+    sc.drawImage(gunImg, 0, 0);
+    try { sc.filter = 'none'; } catch (e) { }
+    sc.globalCompositeOperation = 'source-atop';
+    sc.fillStyle = 'rgba(0,0,0,0.9)';
+    sc.fillRect(0, 0, s.width, s.height);
+    gunShadow = s;
+  };
+  gunImg.src = 'gun.png';
+
+
+  function poly(c, pts) {
+    c.beginPath();
+    c.moveTo(pts[0][0], pts[0][1]);
+    for (var i = 1; i < pts.length; i++) c.lineTo(pts[i][0], pts[i][1]);
+    c.closePath();
+  }
+
+  // 枪身锚点：枪随指向旋转，握把位置跟着手走
+  function gunAnchorPt() {
+    var back = gun.recoil * 22;
+    return {
+      x: gun.x - Math.cos(gun.angle) * back,
+      y: gun.y - Math.sin(gun.angle) * back
+    };
+  }
+
+  // 手腕翻转带来的纵向压扁系数：roll=0 正对镜头为 1，侧棱越大越扁
+  function gunFlat() {
+    return 0.28 + 0.72 * Math.abs(Math.cos(gun.roll));
+  }
+
+  // 贴图坐标 → 世界坐标（贴图 x 轴正方向是枪托方向）
+  function spritePt(px, py) {
+    var a = gunAnchorPt();
+    var k = gun.scale / SPRITE_W;
+    var flat = gunFlat();
+    var c = Math.cos(gun.angle), s = Math.sin(gun.angle);
+    return {
+      x: a.x + (-px * c + py * s * flat) * k,
+      y: a.y + (-px * s - py * c * flat) * k
+    };
+  }
+
+  function muzzlePoint() { return spritePt(MUZZLE_X, MUZZLE_Y); }
+  function portPoint() { return spritePt(PORT_X, PORT_Y); }
+
+  function drawRifle(t) {
+    if (!gunSprite) return;
+    var dw = gun.scale;
+    var dh = gunSprite.height * (dw / gunSprite.width);
+    var a = gunAnchorPt();
+
+    // 手腕翻转：roll=0 时枪身正对镜头，|roll| 越大越接近侧棱
+    var roll = gun.roll;
+    var flat = gunFlat();
+    var shade = Math.min(1, Math.abs(Math.sin(roll)) * 1.25);
+    var side = roll >= 0 ? 1 : -1;
+
+    ctx.save();
+    ctx.translate(a.x, a.y);
+    ctx.rotate(gun.angle - Math.PI);
+    ctx.scale(1, flat);
+
+    // 落地阴影：随翻转一起压扁，让枪浮在画面之上
+    if (gunShadow) {
+      ctx.globalAlpha = 0.55;
+      ctx.drawImage(gunShadow, -dw * GUN_ANCHOR_X + dw * 0.012,
+                              -dh * GUN_ANCHOR_Y, dw, dh);
+      ctx.globalAlpha = 1;
+    }
+
+    ctx.drawImage(gunSprite, -dw * GUN_ANCHOR_X, -dh * GUN_ANCHOR_Y, dw, dh);
+
+    // 体积阴影：侧转时枪背光那一面压暗，偏移量随翻转方向移动
+    if (shade > 0.02 && gunDark) {
+      ctx.globalAlpha = shade * 0.55;
+      ctx.drawImage(gunDark,
+        -dw * GUN_ANCHOR_X + side * dw * 0.008 * shade,
+        -dh * GUN_ANCHOR_Y + side * dh * 0.05 * shade,
+        dw, dh);
+      ctx.globalAlpha = 1;
+    }
+    ctx.restore();
+
+    if (gun.flash > 0.01) drawMuzzleFlash(gun.flash);
+  }
+
+  function drawMuzzleFlash(power) {
+    if (power <= 0.01) return;
+    var m = muzzlePoint();
+    ctx.save();
+    ctx.translate(m.x, m.y);
+    ctx.rotate(gun.angle);
+    ctx.globalCompositeOperation = 'lighter';
+
+    var R = 70 * power;
+    var grd = ctx.createRadialGradient(0, 0, 0, 0, 0, R);
+    grd.addColorStop(0, 'rgba(255,250,225,' + (0.95 * power) + ')');
+    grd.addColorStop(0.3, 'rgba(255,205,110,' + (0.75 * power) + ')');
+    grd.addColorStop(0.66, 'rgba(255,130,40,' + (0.3 * power) + ')');
+    grd.addColorStop(1, 'rgba(255,90,20,0)');
+    ctx.fillStyle = grd;
+    ctx.beginPath();
+    ctx.arc(0, 0, R, 0, Math.PI * 2);
+    ctx.fill();
+
+    // 沿枪管方向喷出的锥形焰
+    var lg2 = ctx.createLinearGradient(4, 0, 84 * power, 0);
+    lg2.addColorStop(0, 'rgba(255,255,235,' + (0.95 * power) + ')');
+    lg2.addColorStop(0.5, 'rgba(255,196,90,' + (0.7 * power) + ')');
+    lg2.addColorStop(1, 'rgba(255,120,30,0)');
+    ctx.fillStyle = lg2;
+    poly(ctx, [[-4, -14 * power], [-4, 14 * power], [84 * power, 0]]);
+    ctx.fill();
+
+    // 两侧焰舌
+    ctx.fillStyle = 'rgba(255,205,130,' + (0.5 * power) + ')';
+    poly(ctx, [[2, -16 * power], [16 * power, -40 * power], [17 * power, -13 * power]]);
+    ctx.fill();
+    poly(ctx, [[2, 16 * power], [16 * power, 40 * power], [17 * power, 13 * power]]);
+    ctx.fill();
+
+    ctx.fillStyle = 'rgba(255,255,242,' + (0.92 * power) + ')';
+    ctx.beginPath();
+    ctx.arc(0, 0, 10 * power, 0, Math.PI * 2);
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // ---------- 粒子 ----------
+  function updateParticles(dt) {
+    for (var i = sparks.length - 1; i >= 0; i--) {
+      var p = sparks[i];
+      p.x += p.vx * dt * 60;
+      p.y += p.vy * dt * 60;
+      p.vx *= 0.96;
+      p.vy *= 0.96;
+      if (p.smoke) p.vy -= 0.02;
+      else p.vy += 0.03;
+      p.life -= p.decay * dt * 60;
+      if (p.life <= 0) sparks.splice(i, 1);
+    }
+
+    for (var j = casings.length - 1; j >= 0; j--) {
+      var c = casings[j];
+      c.x += c.vx * dt * 60;
+      c.y += c.vy * dt * 60;
+      c.vy += 0.14 * dt * 60;
+      c.vx *= 0.995;
+      c.rot += c.vr;
+      c.life -= 0.011 * dt * 60;
+      if (c.life <= 0) casings.splice(j, 1);
+    }
+  }
+
+  function drawParticles() {
+    // 烟
+    ctx.globalCompositeOperation = 'source-over';
+    for (var s = 0; s < sparks.length; s++) {
+      var sm = sparks[s];
+      if (!sm.smoke) continue;
+      ctx.globalAlpha = Math.max(0, sm.life) * 0.2;
+      ctx.fillStyle = 'rgba(168,158,142,1)';
+      ctx.beginPath();
+      ctx.arc(sm.x, sm.y, sm.size * (1.6 + (1 - sm.life) * 3), 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 火花
+    ctx.globalCompositeOperation = 'lighter';
+    for (var i = 0; i < sparks.length; i++) {
+      var p = sparks[i];
+      if (p.smoke) continue;
+      ctx.globalAlpha = Math.max(0, p.life) * 0.85;
+      ctx.fillStyle = 'hsla(' + p.hue + ',100%,72%,1)';
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, p.size * (0.4 + p.life * 0.6), 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+    ctx.globalCompositeOperation = 'source-over';
+
+    // 弹壳
+    for (var j = 0; j < casings.length; j++) {
+      var c = casings[j];
+      ctx.save();
+      ctx.globalAlpha = Math.max(0, Math.min(1, c.life * 1.6));
+      ctx.translate(c.x, c.y);
+      ctx.rotate(c.rot);
+      var cg = ctx.createLinearGradient(-2, 0, 2, 0);
+      cg.addColorStop(0, '#8a6b1f');
+      cg.addColorStop(0.5, '#ffd772');
+      cg.addColorStop(1, '#8a6b1f');
+      ctx.fillStyle = cg;
+      roundRect(ctx, -2.2, -5, 4.4, 10, 1.6);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // ---------- 手部骨架 ----------
+  var HAND_LINKS = [
+    [0, 1], [1, 2], [2, 3], [3, 4],
+    [0, 5], [5, 6], [6, 7], [7, 8],
+    [5, 9], [9, 10], [10, 11], [11, 12],
+    [9, 13], [13, 14], [14, 15], [15, 16],
+    [13, 17], [17, 18], [18, 19], [19, 20],
+    [0, 17]
+  ];
+
+  function drawHandSkeleton(c, pts, alpha) {
+    if (!pts) return;
+    c.save();
+    c.globalAlpha = alpha;
+    c.strokeStyle = 'rgba(255,181,69,.9)';
+    c.lineWidth = 1.4;
+    c.beginPath();
+    for (var i = 0; i < HAND_LINKS.length; i++) {
+      var a = pts[HAND_LINKS[i][0]];
+      var b = pts[HAND_LINKS[i][1]];
+      c.moveTo(a.x, a.y);
+      c.lineTo(b.x, b.y);
+    }
+    c.stroke();
+
+    c.fillStyle = 'rgba(255,222,168,.95)';
+    for (var j = 0; j < pts.length; j++) {
+      c.beginPath();
+      c.arc(pts[j].x, pts[j].y, j === 0 ? 3 : 2, 0, Math.PI * 2);
+      c.fill();
+    }
+    c.restore();
+  }
+
+  // 右下角摄像头小窗：画出摄像头画面 + 手部骨架
+  function drawMini() {
+    var w = miniCanvas.clientWidth;
+    var h = miniCanvas.clientHeight;
+    if (!w || !h) { resizeMini(); return; }
+    mctx.clearRect(0, 0, w, h);
+
+    var vw = video.videoWidth || 0;
+    var vh = video.videoHeight || 0;
+    if (!vw || !vh) return;
+
+    var sc = Math.max(w / vw, h / vh);
+    var dw = vw * sc, dh = vh * sc;
+    var ox = (w - dw) / 2, oy = (h - dh) / 2;
+
+    // 摄像头实拍画面（镜像，和主画面一致）
+    mctx.save();
+    mctx.translate(w, 0);
+    mctx.scale(-1, 1);
+    mctx.drawImage(video, ox, oy, dw, dh);
+    mctx.restore();
+
+    var raw = handState.raw;
+    if (!raw) return;
+
+    var P = raw.map(function (p) {
+      return { x: ox + (1 - p.x) * dw, y: oy + p.y * dh };
+    });
+
+    var a = Math.max(0, 1 - (performance.now() - handState.seen) / 700) * 0.9;
+    if (a > 0.02) drawHandSkeleton(mctx, P, a);
+  }
+
+  // ---------- 准星 ----------
+  function drawReticle(x, y, t) {
+    if (x < -100 || x > W + 100 || y < -100 || y > H + 100) return;
+    var pulse = 0.7 + Math.sin(t * 6) * 0.12;
+    ctx.save();
+    ctx.globalAlpha = pdf(0.85 * gun.alpha * pulse);
+    ctx.strokeStyle = 'rgba(255,181,69,.95)';
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.arc(x, y, 15, 0, Math.PI * 2);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(x, y, 3, 0, Math.PI * 2);
+    ctx.stroke();
+
+    var ticks = [[0, -26, 0, -14], [0, 14, 0, 26], [-26, 0, -14, 0], [14, 0, 26, 0]];
+    for (var i = 0; i < ticks.length; i++) {
+      ctx.beginPath();
+      ctx.moveTo(x + ticks[i][0], y + ticks[i][1]);
+      ctx.lineTo(x + ticks[i][2], y + ticks[i][3]);
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
+
+  function pdf(v) { return v < 0 ? 0 : (v > 1 ? 1 : v); }
+
+  // ---------- 主循环 ----------
+  var lastTs = 0;
+
+  function updateGun(dt) {
+    var now = performance.now();
+    var fresh = now - handState.seen < 500;
+
+    var targetAlpha = fresh ? 1 : (handState.seen > 0 ? 0.12 : 0);
+    gun.alpha = lerp(gun.alpha, targetAlpha, 0.12);
+
+    if (fresh) {
+      gun.x = lerp(gun.x, handState.x, 0.2);
+      gun.y = lerp(gun.y, handState.y, 0.2);
+      gun.scale = lerp(gun.scale, handState.scale, 0.16);
+      gun.roll = lerp(gun.roll, handState.roll, 0.18);
+
+      // 角度做最短路径插值
+      var diff = handState.angle - gun.angle;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      gun.angle += diff * 0.2;
+    }
+
+    gun.visible = gun.alpha > 0.02;
+
+    gun.recoil *= Math.pow(0.001, dt);
+    if (gun.recoil < 0.002) gun.recoil = 0;
+    gun.flash *= Math.pow(0.0001, dt);
+    if (gun.flash < 0.01) gun.flash = 0;
+
+    // 换弹进度
+    if (gun.reloading) {
+      gun.reloadT += dt;
+      var p = clamp(gun.reloadT / 1.5, 0, 1);
+      gun.magOff = Math.sin(p * Math.PI) * 46;
+      if (p >= 1) {
+        gun.reloading = false;
+        gun.magOff = 0;
+        gun.ammo = MAG_SIZE;
+        refreshAmmo();
+        playClick();
+      }
+    }
+
+    // 准星位置：枪口前方，距离随枪身大小变化
+    var muzzle = muzzlePoint();
+    var reach = gun.scale * 0.16;
+    gun.aimX = muzzle.x + Math.cos(gun.angle) * reach;
+    gun.aimY = muzzle.y + Math.sin(gun.angle) * reach;
+  }
+
+  function render(ts) {
+    var t = ts / 1000;
+    var dt = lastTs ? Math.min((ts - lastTs) / 1000, 0.05) : 0.016;
+    lastTs = ts;
+
+    updateGun(dt);
+    updateTargets(dt);
+    updateParticles(dt);
+
+    ctx.clearRect(0, 0, W, H);
+
+    ctx.save();
+    if (gun.recoil > 0.05) {
+      var sh = gun.recoil * 9;
+      ctx.translate(rand(-sh, sh), rand(-sh, sh));
+    }
+
+    // 靶子
+    for (var i = 0; i < targets.length; i++) {
+      drawTarget(targets[i], t);
+    }
+
+    // 枪
+    if (gun.visible) {
+      ctx.globalAlpha = gun.alpha;
+      drawRifle(t);
+      ctx.globalAlpha = 1;
+    }
+
+    drawParticles();
+
+    // 准星
+    if (gun.visible) drawReticle(gun.aimX, gun.aimY, t);
+
+    ctx.restore();
+
+    // 右下角摄像头小窗
+    if (mode === 'camera') {
+      drawMini();
+    } else {
+      mctx.clearRect(0, 0, miniCanvas.clientWidth, miniCanvas.clientHeight);
+    }
+  }
+
+  function tick(ts) {
+    if (!running) return;
+    requestAnimationFrame(tick);
+
+    if (mode === 'camera' && hands && video.readyState >= 2 && !sending && ts - lastSend > 32) {
+      sending = true;
+      lastSend = ts;
+      hands.send({ image: video }).catch(function () {}).then(function () {
+        sending = false;
+      });
+    }
+
+    render(ts);
+  }
+
+  // ---------- MediaPipe ----------
+  var CDN_LIST = [
+    'https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240/',
+    'https://unpkg.com/@mediapipe/hands@0.4.1675469240/'
+  ];
+
+  function loadScript(src) {
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.crossOrigin = 'anonymous';
+      s.onload = resolve;
+      s.onerror = function () { reject(new Error('load failed')); };
+      document.head.appendChild(s);
+    });
+  }
+
+  async function ensureHandsLib() {
+    if (window.Hands) return CDN_LIST[0];
+    for (var i = 0; i < CDN_LIST.length; i++) {
+      try {
+        await loadScript(CDN_LIST[i] + 'hands.js');
+        if (window.Hands) return CDN_LIST[i];
+      } catch (e) { /* 尝试下一个源 */ }
+    }
+    throw new Error('MediaPipe 加载失败');
+  }
+
+  async function initHands() {
+    var base = await ensureHandsLib();
+    hands = new window.Hands({
+      locateFile: function (file) { return base + file; }
+    });
+    hands.setOptions({
+      maxNumHands: 1,
+      modelComplexity: 1,
+      minDetectionConfidence: 0.6,
+      minTrackingConfidence: 0.5,
+      selfieMode: false
+    });
+    hands.onResults(onResults);
+    return hands;
+  }
+
+  // ---------- 摄像头 ----------
+  var currentDeviceId = '';
+
+  async function startCamera(deviceId) {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      throw new Error('不支持摄像头');
+    }
+    var vc = { width: { ideal: 1280 }, height: { ideal: 720 } };
+    if (deviceId) vc.deviceId = { exact: deviceId };
+
+    var stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: vc });
+    camStream = stream;
+
+    var track = stream.getVideoTracks()[0];
+    if (track && track.getSettings) {
+      var st = track.getSettings();
+      currentDeviceId = st.deviceId || deviceId || '';
+    }
+
+    video.srcObject = stream;
+    await video.play();
+    refreshCameraList();
+    return stream;
+  }
+
+  // 列出电脑上的所有摄像头，方便在多个设备间切换
+  async function refreshCameraList() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.enumerateDevices) return;
+    try {
+      var list = await navigator.mediaDevices.enumerateDevices();
+      var cams = list.filter(function (d) { return d.kind === 'videoinput'; });
+      camSelect.innerHTML = '';
+      for (var i = 0; i < cams.length; i++) {
+        var o = document.createElement('option');
+        o.value = cams[i].deviceId;
+        o.textContent = cams[i].label || ('摄像头 ' + (i + 1));
+        camSelect.appendChild(o);
+      }
+      if (currentDeviceId) camSelect.value = currentDeviceId;
+      camSelect.style.display = cams.length > 1 ? 'inline-block' : 'none';
+    } catch (e) { /* 忽略 */ }
+  }
+
+  async function restartCamera(deviceId) {
+    stopCamera();
+    try {
+      await startCamera(deviceId);
+      mode = 'camera';
+      stage.classList.remove('hide-cam');
+      toggleCamBtn.style.display = '';
+      toggleCamBtn.textContent = showCam ? '隐藏画面' : '显示画面';
+      setPill('识别中', true);
+      refreshAmmo();
+      if (!running) { spawnTarget(); spawnTarget(); startLoop(); }
+    } catch (err) {
+      cameraFail(cameraErrorText(err));
+    }
+  }
+
+  function stopCamera() {
+    if (camStream) {
+      camStream.getTracks().forEach(function (tr) { tr.stop(); });
+      camStream = null;
+    }
+    video.srcObject = null;
+  }
+
+  // 摄像头或识别库不可用：回到入口页并说明原因
+  function cameraFail(msg) {
+    stopCamera();
+    mode = 'idle';
+    running = false;
+    stage.classList.add('hide-cam');
+    setPill('启动失败', false);
+    hintEl.textContent = '摄像头未启动';
+    document.querySelector('.gate-card p').innerHTML = msg +
+      '<br>请允许摄像头权限，并用 http://127.0.0.1 或 https 打开本页面。';
+    startBtn.textContent = '重新检测摄像头';
+    gate.classList.remove('hide');
+  }
+
+  async function boot() {
+    gate.classList.add('hide');
+    toggleCamBtn.style.display = '';
+    setPill('正在加载模型…', false);
+    hintEl.textContent = '模型加载中，请稍候…';
+    initAudio();
+    if (actx && actx.state === 'suspended') { try { await actx.resume(); } catch (e) {} }
+
+    try {
+      await initHands();
+    } catch (e) {
+      cameraFail('手部识别库加载失败（可能是网络问题）。');
+      return;
+    }
+
+    try {
+      await startCamera();
+      mode = 'camera';
+      setPill('识别中', false);
+      hintEl.innerHTML = '食指伸出 = <b>举枪瞄准</b> · 收回食指 = <b>开火</b> · 握拳 = <b>换弹</b>';
+      stage.classList.toggle('hide-cam', !showCam);
+      toggleCamBtn.textContent = showCam ? '隐藏画面' : '显示画面';
+      refreshAmmo();
+      spawnTarget(); spawnTarget();
+      startLoop();
+    } catch (err) {
+      cameraFail(cameraErrorText(err));
+    }
+  }
+
+  function cameraErrorText(err) {
+    var name = (err && err.name) || '';
+    if (name === 'NotAllowedError' || name === 'SecurityError') {
+      return '摄像头权限被拒绝，可在地址栏允许后刷新。';
+    }
+    if (name === 'NotFoundError') return '未检测到摄像头，请确认电脑摄像头已连接。';
+    if (name === 'NotReadableError') return '摄像头被其他程序占用。';
+    return '摄像头启动失败。';
+  }
+
+  function startLoop() {
+    if (running) return;
+    running = true;
+    lastTs = 0;
+    requestAnimationFrame(tick);
+  }
+
+  // ---------- 交互 ----------
+  var IS_MOBILE = /Android|iPhone|iPad|iPod|HarmonyOS|Mobile|MicroMessenger/i.test(navigator.userAgent);
+
+  if (IS_MOBILE) {
+    startBtn.disabled = true;
+    startBtn.style.opacity = '0.5';
+    startBtn.style.cursor = 'not-allowed';
+    startBtn.textContent = '仅支持电脑';
+    document.querySelector('.gate-card .tip').textContent = '此页面只使用电脑摄像头，请在电脑浏览器中打开。';
+  }
+
+  startBtn.addEventListener('click', function () {
+    if (IS_MOBILE) return;
+    boot();
+  });
+
+  camSelect.addEventListener('change', function () {
+    restartCamera(camSelect.value);
+  });
+
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', refreshCameraList);
+  }
+
+  toggleCamBtn.addEventListener('click', function () {
+    showCam = !showCam;
+    stage.classList.toggle('hide-cam', !showCam);
+    toggleCamBtn.textContent = showCam ? '隐藏画面' : '显示画面';
+  });
+
+  resetBtn.addEventListener('click', function () {
+    stopCamera();
+    mode = 'idle';
+    hands = null;
+    running = false;
+    stage.classList.add('hide-cam');
+    toggleCamBtn.style.display = '';
+    handState.raw = null;
+    handState.pts = null;
+    mctx.clearRect(0, 0, miniCanvas.width, miniCanvas.height);
+    gun.ammo = MAG_SIZE;
+    gun.reloading = false;
+    gun.magOff = 0;
+    gun.alpha = 0;
+    gun.visible = false;
+    gun.recoil = 0;
+    gun.flash = 0;
+    targets.length = 0;
+    sparks.length = 0;
+    casings.length = 0;
+    pose = 'idle';
+    fistSince = 0;
+    score = 0;
+    scoreVal.textContent = '0';
+    refreshAmmo();
+    setPill('未启动', false);
+    gate.classList.remove('hide');
+  });
+
+  window.addEventListener('keydown', function (e) {
+    if (e.key === 'r' || e.key === 'R') startReload();
+  });
+
+  refreshAmmo();
+})();
+</script>
+</body>
+</html>
